@@ -2,6 +2,8 @@
 
 bool isInstanceExtensionSupported(const char* name);
 
+uint32_t apiVersion();
+bool isBufferDeviceAddressEnabled(); // false when NIAGARA_API=1.3 dropped the feature; buffer addresses are then 0
 VkInstance createInstance();
 VkDebugUtilsMessengerEXT registerDebugCallback(VkInstance instance);
 

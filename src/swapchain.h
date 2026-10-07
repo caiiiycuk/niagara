@@ -13,6 +13,7 @@ struct Swapchain
 
 typedef struct GLFWwindow GLFWwindow;
 
+bool isHeadless();
 const char** getSwapchainExtensions(uint32_t* count);
 
 VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window);

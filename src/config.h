@@ -33,6 +33,9 @@
 // Minimum number of images in flight
 #define MIN_IMAGES 3
 
+#define HEADLESS_WIDTH 1024
+#define HEADLESS_HEIGHT 768
+
 // Should we enable vertical sync during presentation? Worth setting to 0 when doing perf profiling to avoid GPU downclock during idle
 #define CONFIG_VSYNC 1
 

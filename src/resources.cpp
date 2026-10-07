@@ -1,5 +1,6 @@
 #include "common.h"
 #include "resources.h"
+#include "device.h"
 
 #include <string.h>
 
@@ -198,6 +199,9 @@ void destroyBuffer(const Buffer& buffer, VkDevice device)
 // TODO: replace this with direct access to Buffer::address
 VkDeviceAddress getBufferAddress(const Buffer& buffer, VkDevice device)
 {
+	if (!isBufferDeviceAddressEnabled())
+		return 0;
+
 	VkBufferDeviceAddressInfo info = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
 	info.buffer = buffer.buffer;
 

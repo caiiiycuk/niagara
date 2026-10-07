@@ -25,7 +25,15 @@
 #ifdef _WIN32
 #include <Windows.h>
 #else
+#include <dlfcn.h>
 #include <unistd.h>
+#endif
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// vkdawn (Vulkan on WebGPU) is linked statically; there is no loader in the browser
+extern "C" PFN_vkVoidFunction vkdawn_GetInstanceProcAddr(VkInstance instance, const char* pName);
 #endif
 
 bool meshShadingEnabled = true;
@@ -189,6 +197,14 @@ void pushConstants(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc, c
 		vkCmdPushConstants(commandBuffer, program.layout, program.pushConstantStages, 0, sizeof(constants), &constants);
 }
 
+static void warnPushDescriptorsUnavailable()
+{
+	static bool warned = false;
+	if (!warned)
+		fprintf(stderr, "niagara: push descriptors unavailable, descriptors are not bound\n");
+	warned = true;
+}
+
 template <size_t PushDescriptors>
 void pushDescriptors(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc, const Program& program, const DescriptorInfo (&descriptors)[PushDescriptors])
 {
@@ -207,8 +223,10 @@ void pushDescriptors(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc,
 		vkCmdPushDataEXT(commandBuffer, &pushDataInfo);
 #endif
 	}
-	else
+	else if (vkCmdPushDescriptorSetWithTemplate)
 		vkCmdPushDescriptorSetWithTemplate(commandBuffer, program.updateTemplate, program.layout, 0, descriptors);
+	else
+		warnPushDescriptorsUnavailable();
 }
 
 template <typename PushConstants, size_t PushDescriptors>
@@ -489,7 +507,31 @@ int main(int argc, const char** argv)
 		return 1;
 	}
 
-	VK_CHECK(volkInitialize());
+#ifdef __EMSCRIPTEN__
+	volkInitializeCustom(vkdawn_GetInstanceProcAddr);
+#else
+	// NIAGARA_VULKAN_LIB=<path> loads a specific Vulkan library (e.g. a loader-less layer) instead of the system loader
+	if (const char* lib = getenv("NIAGARA_VULKAN_LIB"))
+	{
+#ifdef _WIN32
+		HMODULE module = LoadLibraryA(lib);
+		PFN_vkGetInstanceProcAddr gipa = module ? (PFN_vkGetInstanceProcAddr)GetProcAddress(module, "vkGetInstanceProcAddr") : nullptr;
+#else
+		void* module = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
+		PFN_vkGetInstanceProcAddr gipa = module ? (PFN_vkGetInstanceProcAddr)dlsym(module, "vkGetInstanceProcAddr") : nullptr;
+#endif
+		if (!gipa)
+		{
+			fprintf(stderr, "niagara: failed to load Vulkan library %s\n", lib);
+			return 1;
+		}
+		volkInitializeCustom(gipa);
+	}
+	else
+	{
+		VK_CHECK(volkInitialize());
+	}
+#endif
 
 #ifdef __linux
 	// If both Wayland & X11 are supported, GLFW will default to Wayland; ask it for X11 if we can't use Wayland extension (when launched via RenderDoc)
@@ -497,7 +539,9 @@ int main(int argc, const char** argv)
 		glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
 #endif
 
+#ifndef __EMSCRIPTEN__
 	glfwInitVulkanLoader(vkGetInstanceProcAddr); // used for glfwCreateWindowSurface
+#endif
 	glfwSetErrorCallback(errorCallback);
 
 	int rc = glfwInit();
@@ -561,6 +605,28 @@ int main(int argc, const char** argv)
 	if (getenv("DESCHEAP"))
 		descheapSupported &= atoi(getenv("DESCHEAP")) != 0;
 
+	// NIAGARA_MESH=0 / NIAGARA_RT=0 force the vertex pipeline / no ray tracing for reproducible cross-backend runs
+	if (getenv("NIAGARA_MESH"))
+		meshShadingSupported &= atoi(getenv("NIAGARA_MESH")) != 0;
+
+	if (getenv("NIAGARA_RT"))
+		raytracingSupported &= atoi(getenv("NIAGARA_RT")) != 0;
+
+	// NIAGARA_DEBUGTEXT=0 disables the stats overlay (its contents vary per run); NIAGARA_FRAMES=A-B exits after present B
+	if (getenv("NIAGARA_DEBUGTEXT") && atoi(getenv("NIAGARA_DEBUGTEXT")) == 0)
+		debugGuiMode = 0;
+
+	unsigned int lastFrame = 0;
+	if (getenv("NIAGARA_FRAMES"))
+	{
+		unsigned int firstFrame = 0;
+		if (sscanf(getenv("NIAGARA_FRAMES"), "%u-%u", &firstFrame, &lastFrame) != 2 || firstFrame < 1 || lastFrame < firstFrame)
+		{
+			fprintf(stderr, "niagara: NIAGARA_FRAMES must be A-B with 1 <= A <= B\n");
+			return 1;
+		}
+	}
+
 	if (descheapSupported && CONFIG_GPUVAL)
 	{
 		descheapSupported = false;
@@ -618,6 +684,11 @@ int main(int argc, const char** argv)
 	assert(device);
 
 	volkLoadDevice(device);
+
+	// NIAGARA_API=1.3: a 1.3 app must go through VK_KHR_push_descriptor, not the core 1.4 entry point (vkdawn integration;
+	// also keeps capture layers that predate 1.4 in the loop)
+	if (apiVersion() < VK_API_VERSION_1_4)
+		vkCmdPushDescriptorSetWithTemplate = vkCmdPushDescriptorSetWithTemplateKHR;
 
 	VkSemaphore acquireSemaphores[MAX_FRAMES] = {};
 	VkFence frameFences[MAX_FRAMES] = {};
@@ -1189,6 +1260,9 @@ int main(int argc, const char** argv)
 	uint32_t depthPyramidHeight = 0;
 	uint32_t depthPyramidLevels = 0;
 
+	if (isHeadless())
+		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
 	GLFWwindow* window = glfwCreateWindow(1024, 768, "niagara", 0, 0);
 	assert(window);
 
@@ -1229,7 +1303,7 @@ int main(int argc, const char** argv)
 	uint64_t pipelineResults[3] = {};
 	bool pipelineResultsMesh[MAX_FRAMES] = {};
 
-	while (!glfwWindowShouldClose(window))
+	auto frame = [&]()
 	{
 		double frameDelta = glfwGetTime() - frameTimestamp;
 		frameTimestamp = glfwGetTime();
@@ -1298,7 +1372,7 @@ int main(int argc, const char** argv)
 		SwapchainStatus swapchainStatus = updateSwapchain(swapchain, physicalDevice, device, surface, familyIndex, window, swapchainFormat);
 
 		if (swapchainStatus == Swapchain_NotReady)
-			continue;
+			return;
 
 		if (swapchainStatus == Swapchain_Resized || !depthTarget.image)
 		{
@@ -1441,7 +1515,7 @@ int main(int argc, const char** argv)
 		if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR)
 		{
 			swapchain.dirty = true;
-			continue; // attempting to render to an out-of-date swapchain would break semaphore synchronization
+			return; // attempting to render to an out-of-date swapchain would break semaphore synchronization
 		}
 		VK_CHECK_SWAPCHAIN(acquireResult);
 
@@ -2086,6 +2160,9 @@ int main(int argc, const char** argv)
 
 		frameIndex++;
 
+		if (lastFrame && frameIndex >= lastFrame)
+			glfwSetWindowShouldClose(window, 1);
+
 		if (debugSleep)
 		{
 #ifdef _WIN32
@@ -2094,8 +2171,10 @@ int main(int argc, const char** argv)
 			usleep(20 * 1000);
 #endif
 		}
-	}
+	};
 
+	auto shutdown = [&]()
+	{
 	VK_CHECK(vkDeviceWaitIdle(device));
 
 	if (textureSet.first)
@@ -2246,4 +2325,37 @@ int main(int argc, const char** argv)
 	vkDestroyInstance(instance, 0);
 
 	volkFinalize();
+	};
+
+#ifdef __EMSCRIPTEN__
+	// The browser owns the loop: emscripten_set_main_loop_arg with simulate_infinite_loop=1 never returns,
+	// which keeps main's stack frame (and every local the lambdas capture by reference) alive between frames.
+	struct MainLoop
+	{
+		decltype(frame)* frame;
+		decltype(shutdown)* shutdown;
+		GLFWwindow* window;
+		int settle; // ticks to idle after the last frame so async GPU readbacks of the final presents can land
+	} loop = { &frame, &shutdown, window, 60 };
+
+	emscripten_set_main_loop_arg([](void* arg)
+	{
+		MainLoop* loop = (MainLoop*)arg;
+		if (!glfwWindowShouldClose(loop->window))
+		{
+			(*loop->frame)();
+			return;
+		}
+		if (loop->settle-- > 0)
+			return;
+		emscripten_cancel_main_loop();
+		(*loop->shutdown)();
+		exit(0);
+	}, &loop, 0, 1);
+#else
+	while (!glfwWindowShouldClose(window))
+		frame();
+
+	shutdown();
+#endif
 }

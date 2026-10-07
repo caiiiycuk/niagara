@@ -13,8 +13,39 @@
 
 #define VSYNC CONFIG_VSYNC
 
+// NIAGARA_HEADLESS=1 renders into a VK_EXT_headless_surface with a fixed extent instead of the GLFW window surface
+bool isHeadless()
+{
+#ifdef __EMSCRIPTEN__
+	return true;
+#else
+	static bool headless = getenv("NIAGARA_HEADLESS") && atoi(getenv("NIAGARA_HEADLESS")) != 0;
+	return headless;
+#endif
+}
+
+static void getFramebufferSize(GLFWwindow* window, int* width, int* height)
+{
+	if (isHeadless())
+	{
+		*width = HEADLESS_WIDTH;
+		*height = HEADLESS_HEIGHT;
+	}
+	else
+	{
+		glfwGetFramebufferSize(window, width, height);
+	}
+}
+
 const char** getSwapchainExtensions(uint32_t* count)
 {
+	if (isHeadless())
+	{
+		static const char* extensions[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME };
+		*count = sizeof(extensions) / sizeof(extensions[0]);
+		return extensions;
+	}
+
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 	static const char* extensions[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
 	*count = sizeof(extensions) / sizeof(extensions[0]);
@@ -28,6 +59,13 @@ VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window)
 {
 	VkSurfaceKHR surface = 0;
 
+	if (isHeadless())
+	{
+		VkHeadlessSurfaceCreateInfoEXT createInfo = { VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT };
+		VK_CHECK(vkCreateHeadlessSurfaceEXT(instance, &createInfo, 0, &surface));
+		return surface;
+	}
+
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 	// Note: GLFW has a helper glfwCreateWindowSurface but we're going to do this the hard way to demonstrate the platform-specific surface creation
 	assert(glfwGetPlatform() == GLFW_PLATFORM_WIN32);
@@ -35,7 +73,7 @@ VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window)
 	createInfo.hinstance = GetModuleHandle(0);
 	createInfo.hwnd = glfwGetWin32Window(window);
 	VK_CHECK(vkCreateWin32SurfaceKHR(instance, &createInfo, 0, &surface));
-#else
+#elif !defined(__EMSCRIPTEN__)
 	VK_CHECK(glfwCreateWindowSurface(instance, window, 0, &surface));
 #endif
 
@@ -91,7 +129,7 @@ void createSwapchain(Swapchain& result, VkPhysicalDevice physicalDevice, VkDevic
 	VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCaps));
 
 	int width = 0, height = 0;
-	glfwGetFramebufferSize(window, &width, &height);
+	getFramebufferSize(window, &width, &height);
 
 	VkPresentModeKHR presentMode = getPresentMode(physicalDevice, surface);
 
@@ -145,7 +183,7 @@ void destroySwapchain(VkDevice device, const Swapchain& swapchain)
 SwapchainStatus updateSwapchain(Swapchain& result, VkPhysicalDevice physicalDevice, VkDevice device, VkSurfaceKHR surface, uint32_t familyIndex, GLFWwindow* window, VkFormat format)
 {
 	int width = 0, height = 0;
-	glfwGetFramebufferSize(window, &width, &height);
+	getFramebufferSize(window, &width, &height);
 
 	if (width == 0 || height == 0)
 		return Swapchain_NotReady;

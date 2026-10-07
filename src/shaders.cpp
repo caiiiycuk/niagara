@@ -16,7 +16,7 @@
 
 #if defined __APPLE__
 #include <spirv_cross/spirv.h>
-#elif defined __linux__
+#elif defined __linux__ || defined __EMSCRIPTEN__
 #include <spirv/unified1/spirv.h>
 #elif VK_HEADER_VERSION >= 135
 #include <spirv-headers/spirv.h>

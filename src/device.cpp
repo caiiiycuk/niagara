@@ -16,7 +16,14 @@
 #endif
 
 // We have a strict requirement for latest Vulkan version to be available
-#define API_VERSION VK_API_VERSION_1_4
+// NIAGARA_API=1.3 relaxes this to Vulkan 1.3 (vkdawn integration)
+uint32_t apiVersion()
+{
+	const char* env = getenv("NIAGARA_API");
+	return env && strcmp(env, "1.3") == 0 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_4;
+}
+
+#define API_VERSION apiVersion()
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -51,6 +58,55 @@ bool isInstanceExtensionSupported(const char* name)
 
 	return false;
 }
+
+static bool isDeviceExtensionSupported(VkPhysicalDevice physicalDevice, const char* name)
+{
+	uint32_t propertyCount = 0;
+	VK_CHECK(vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &propertyCount, 0));
+
+	std::vector<VkExtensionProperties> properties(propertyCount);
+	VK_CHECK(vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &propertyCount, properties.data()));
+
+	for (uint32_t i = 0; i < propertyCount; ++i)
+		if (strcmp(name, properties[i].extensionName) == 0)
+			return true;
+
+	return false;
+}
+
+// Clears requested features the device does not report; VkBool32 fields follow sType/pNext in every features struct
+template <typename T, size_t N>
+static void intersectFeatures(T& requested, const T& available, const char* const (&names)[N])
+{
+	VkBool32* req = (VkBool32*)(&requested.pNext + 1);
+	const VkBool32* avail = (const VkBool32*)(&available.pNext + 1);
+	size_t count = N;
+
+	for (size_t i = 0; i < count; ++i)
+		if (req[i] && !avail[i])
+		{
+			printf("niagara: feature %s unavailable\n", names[i]);
+			req[i] = false;
+		}
+}
+
+static const char* const featureNames10[] = {
+	"robustBufferAccess", "fullDrawIndexUint32", "imageCubeArray", "independentBlend", "geometryShader", "tessellationShader", "sampleRateShading", "dualSrcBlend", "logicOp", "multiDrawIndirect", "drawIndirectFirstInstance", "depthClamp", "depthBiasClamp", "fillModeNonSolid", "depthBounds", "wideLines", "largePoints", "alphaToOne", "multiViewport", "samplerAnisotropy", "textureCompressionETC2", "textureCompressionASTC_LDR", "textureCompressionBC", "occlusionQueryPrecise", "pipelineStatisticsQuery", "vertexPipelineStoresAndAtomics", "fragmentStoresAndAtomics", "shaderTessellationAndGeometryPointSize", "shaderImageGatherExtended", "shaderStorageImageExtendedFormats", "shaderStorageImageMultisample", "shaderStorageImageReadWithoutFormat", "shaderStorageImageWriteWithoutFormat", "shaderUniformBufferArrayDynamicIndexing", "shaderSampledImageArrayDynamicIndexing", "shaderStorageBufferArrayDynamicIndexing", "shaderStorageImageArrayDynamicIndexing", "shaderClipDistance", "shaderCullDistance", "shaderFloat64", "shaderInt64", "shaderInt16", "shaderResourceResidency", "shaderResourceMinLod", "sparseBinding", "sparseResidencyBuffer", "sparseResidencyImage2D", "sparseResidencyImage3D", "sparseResidency2Samples", "sparseResidency4Samples", "sparseResidency8Samples", "sparseResidency16Samples", "sparseResidencyAliased", "variableMultisampleRate", "inheritedQueries"
+};
+
+static const char* const featureNames11[] = {
+	"storageBuffer16BitAccess", "uniformAndStorageBuffer16BitAccess", "storagePushConstant16", "storageInputOutput16", "multiview", "multiviewGeometryShader", "multiviewTessellationShader", "variablePointersStorageBuffer", "variablePointers", "protectedMemory", "samplerYcbcrConversion", "shaderDrawParameters"
+};
+
+static const char* const featureNames12[] = {
+	"samplerMirrorClampToEdge", "drawIndirectCount", "storageBuffer8BitAccess", "uniformAndStorageBuffer8BitAccess", "storagePushConstant8", "shaderBufferInt64Atomics", "shaderSharedInt64Atomics", "shaderFloat16", "shaderInt8", "descriptorIndexing", "shaderInputAttachmentArrayDynamicIndexing", "shaderUniformTexelBufferArrayDynamicIndexing", "shaderStorageTexelBufferArrayDynamicIndexing", "shaderUniformBufferArrayNonUniformIndexing", "shaderSampledImageArrayNonUniformIndexing", "shaderStorageBufferArrayNonUniformIndexing", "shaderStorageImageArrayNonUniformIndexing", "shaderInputAttachmentArrayNonUniformIndexing", "shaderUniformTexelBufferArrayNonUniformIndexing", "shaderStorageTexelBufferArrayNonUniformIndexing", "descriptorBindingUniformBufferUpdateAfterBind", "descriptorBindingSampledImageUpdateAfterBind", "descriptorBindingStorageImageUpdateAfterBind", "descriptorBindingStorageBufferUpdateAfterBind", "descriptorBindingUniformTexelBufferUpdateAfterBind", "descriptorBindingStorageTexelBufferUpdateAfterBind", "descriptorBindingUpdateUnusedWhilePending", "descriptorBindingPartiallyBound", "descriptorBindingVariableDescriptorCount", "runtimeDescriptorArray", "samplerFilterMinmax", "scalarBlockLayout", "imagelessFramebuffer", "uniformBufferStandardLayout", "shaderSubgroupExtendedTypes", "separateDepthStencilLayouts", "hostQueryReset", "timelineSemaphore", "bufferDeviceAddress", "bufferDeviceAddressCaptureReplay", "bufferDeviceAddressMultiDevice", "vulkanMemoryModel", "vulkanMemoryModelDeviceScope", "vulkanMemoryModelAvailabilityVisibilityChains", "shaderOutputViewportIndex", "shaderOutputLayer", "subgroupBroadcastDynamicId"
+};
+
+static const char* const featureNames13[] = {
+	"robustImageAccess", "inlineUniformBlock", "descriptorBindingInlineUniformBlockUpdateAfterBind", "pipelineCreationCacheControl", "privateData", "shaderDemoteToHelperInvocation", "shaderTerminateInvocation", "subgroupSizeControl", "computeFullSubgroups", "synchronization2", "textureCompressionASTC_HDR", "shaderZeroInitializeWorkgroupMemory", "dynamicRendering", "shaderIntegerDotProduct", "maintenance4"
+};
+
+static const char* const featureNamesMaintenance5[] = { "maintenance5" };
 
 VkInstance createInstance()
 {
@@ -266,6 +322,13 @@ VkPhysicalDevice pickPhysicalDevice(VkPhysicalDevice* physicalDevices, uint32_t 
 	return result;
 }
 
+static bool bufferDeviceAddressEnabled = true;
+
+bool isBufferDeviceAddressEnabled()
+{
+	return bufferDeviceAddressEnabled;
+}
+
 VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint32_t familyIndex, bool meshShadingSupported, bool meshShaderQueriesSupported, bool raytracingSupported, bool clusterrtSupported, bool descheapSupported, bool ommSupported)
 {
 	float queuePriorities[] = { 1.0f };
@@ -278,6 +341,18 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint
 	std::vector<const char*> extensions = {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 	};
+
+	bool legacy = API_VERSION < VK_API_VERSION_1_4;
+
+	if (legacy)
+	{
+		extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+
+		if (isDeviceExtensionSupported(physicalDevice, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME))
+			extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+		else
+			printf("niagara: feature pushDescriptor unavailable\n");
+	}
 
 	if (meshShadingSupported)
 		extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
@@ -346,6 +421,28 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint
 	features14.maintenance6 = true;
 	features14.pushDescriptor = true;
 
+	// This will only be used if legacy=true (see below); replaces features14
+	VkPhysicalDeviceMaintenance5FeaturesKHR featuresMaintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
+	featuresMaintenance5.maintenance5 = true;
+
+	if (legacy)
+	{
+		VkPhysicalDeviceMaintenance5FeaturesKHR availMaintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
+		VkPhysicalDeviceVulkan13Features avail13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &availMaintenance5 };
+		VkPhysicalDeviceVulkan12Features avail12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &avail13 };
+		VkPhysicalDeviceVulkan11Features avail11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &avail12 };
+		VkPhysicalDeviceFeatures2 avail = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &avail11 };
+		vkGetPhysicalDeviceFeatures2(physicalDevice, &avail);
+
+		intersectFeatures(features, avail, featureNames10);
+		intersectFeatures(features11, avail11, featureNames11);
+		intersectFeatures(features12, avail12, featureNames12);
+		intersectFeatures(features13, avail13, featureNames13);
+		intersectFeatures(featuresMaintenance5, availMaintenance5, featureNamesMaintenance5);
+
+		bufferDeviceAddressEnabled = features12.bufferDeviceAddress;
+	}
+
 	// This will only be used if meshShadingSupported=true (see below)
 	VkPhysicalDeviceMeshShaderFeaturesEXT featuresMesh = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT };
 	featuresMesh.taskShader = true;
@@ -387,9 +484,9 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint
 	features.pNext = &features11;
 	features11.pNext = &features12;
 	features12.pNext = &features13;
-	features13.pNext = &features14;
+	features13.pNext = legacy ? (void*)&featuresMaintenance5 : (void*)&features14;
 
-	void** ppNext = &features14.pNext;
+	void** ppNext = legacy ? &featuresMaintenance5.pNext : &features14.pNext;
 
 	if (meshShadingSupported)
 	{
