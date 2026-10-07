@@ -1067,7 +1067,11 @@ int main(int argc, const char** argv)
 			draw.scale = float(rand01()) + 1;
 			draw.scale *= 2;
 
-			vec3 axis = normalize(vec3(float(rand01()) * 2 - 1, float(rand01()) * 2 - 1, float(rand01()) * 2 - 1));
+			// one statement per rand01(): argument evaluation order is unspecified (gcc vs clang differ)
+			float ax = float(rand01()) * 2 - 1;
+			float ay = float(rand01()) * 2 - 1;
+			float az = float(rand01()) * 2 - 1;
+			vec3 axis = normalize(vec3(ax, ay, az));
 			float angle = glm::radians(float(rand01()) * 90.f);
 
 			draw.orientation = quat(cosf(angle * 0.5f), axis * sinf(angle * 0.5f));
